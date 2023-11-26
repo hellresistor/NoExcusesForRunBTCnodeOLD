@@ -1,0 +1,121 @@
+#!/bin/bash
+#--------------------------------------------#
+#  BTC Node + Lightning + Nostr + + + + + +  #
+#--------------------------------------------#
+#         Variaveis Funcoes Cores            #
+#--------------------------------------------#
+
+export DEBIAN_FRONTEND=noninteractive
+
+### Pacotes necessários
+PACOTESNECESSARIOS=(sudo hwinfo htop curl wget git hdparm dphys-swapfile avahi-daemon gnupg ufw fail2ban nginx libnginx-mod-stream apt-transport-https python3 python3-dev python3-pip python3-setuptools python3-wheel cargo clang cmake jq bc libssl-dev )
+ 
+### Variaveis de sistema ###
+SSHPORT=22 # Porta SSH
+PASTADATA="/data"
+PASTABACKUP="/tmp/BackupPLEB"
+TORGPGKEY="A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89" # CONFERE SEMPRE EM: https://..
+
+### Variaveis de Links ###
+NODEJSLINKINSTALLERS="https://deb.nodesource.com/setup_16.x"
+### Variaveis de GET a ultima versao de software ###
+BTCVERSAO=$(curl --silent "https://api.github.com/repos/bitcoin/bitcoin/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
+ELECTRSVERSAO=$(curl --silent "https://api.github.com/repos/romanz/electrs/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
+BTCEXPLORERVERSAO=$(curl --silent "https://api.github.com/repos/janoside/btc-rpc-explorer/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
+LNVERSAO=$(curl --silent "https://api.github.com/repos/lightningnetwork/lnd/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
+
+### Colorificar
+final=$'\e[0m'
+verde=$'\e[92m'
+azul=$'\e[94m'
+vermelho=$'\e[91m'
+amarelo=$'\e[93m'
+
+### Funcoes de menssagem
+function ok { echo -e "${verde}[OK] $* ${final}"; sleep 0.5; }
+function erro { echo -e "${vermelho}[ERRO] $* ${final}"; exit 1; }
+function aviso { echo -e "${amarelo}[AVISO] $* ${final}"; sleep 0.75; }
+function info { echo -e "${azul}[INFO] $* ${final}"; sleep 0.5; }
+
+### Funcoes a repetir ao longo do script
+# Funcao para detectar e criar ustilizadores
+function DetectarCriarUtilizadores() {
+ local UTILIZADOR=$1
+ if sudo id "$UTILIZADOR" > /dev/null 2>&1; then
+  aviso "Utilizador $UTILIZADOR existente"
+ else
+  sudo adduser --gecos "" --disabled-password "$UTILIZADOR"
+  ok "Utilizador $UTILIZADOR criado"
+ fi
+}
+# Funcao Adicionar disco ao fstab
+function AdicionarUuidAoFstab {
+ local PARTICAO_ESCOLHIDA=$1
+ info "A adicionar $PARTICAO_ESCOLHIDA ao ficheiro fstab .."
+ UUIDDISCO=$(lsblk -o NAME,UUID | grep "$PARTICAO_ESCOLHIDA" | awk '{print $2}')
+ echo "UUID=$UUIDDISCO $PASTADATA ext4 rw,nosuid,dev,noexec,noatime,nodiratime,auto,nouser,async,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
+ ok "Disco $PARTICAO_ESCOLHIDA adicionado ao fstab com sucesso"
+}
+# Funcao Questionario Passwords (A|B|C|D|E)
+function DefinirPassword() {
+ local VARIAVELPASSWORD=$1
+ local PROMPTPASSWORD=$2
+ local PASSWORD=""
+ local CONFIRMACAOPASSWORD=""
+ while [[ "$PASSWORD" != "$CONFIRMACAOPASSWORD" ]]; do
+  read -rsp "$PROMPTPASSWORD (+8 caracteres): " PASSWORD
+  while [ "${#PASSWORD}" -lt 8 ]; do
+   warn "Coloca mais caracteres, no mínimo 8."
+   read -rsp "$PROMPTPASSWORD (+8 caracteres): " PASSWORD
+   done
+  read -rsp "Repete a Password: " CONFIRMACAOPASSWORD
+ done
+ eval "$VARIAVELPASSWORD='$PASSWORD'"
+}
+# Funcao Questao se X servico acede por TOR 
+function ConfigurarAcessoTor() {
+ local hidden_service_dir=$1
+ local hidden_service_port=$2
+ while true; do
+  read -p "Deseja configurar acesso remoto via TOR? (Sim/Nao)" ESCOLHAACESSOTOR
+  if [ "$ESCOLHAACESSOTOR" = "S" ] || [ "$ESCOLHAACESSOTOR" = "s" ]; then
+   # Configuracao do torrc
+   echo "# Hidden Service Configuration
+HiddenServiceDir $hidden_service_dir
+HiddenServiceVersion 3
+HiddenServicePort $hidden_service_port 127.0.0.1:$hidden_service_port" >> /etc/tor/torrc
+   sudo systemctl reload tor
+   # Adiciona o hostname ao arquivo de backup
+   echo "$hidden_service_dir/hostname" || sudo tee -a /home/admin/MeuBackup.txt
+   ok "Configuracao acesso tor com sucesso."
+   break
+  elif [ "$ESCOLHAACESSOTOR" = "N" ] || [ "$ESCOLHAACESSOTOR" = "n" ]; then
+   aviso "Acesso Tor nao configurado"
+   break
+  else
+   aviso "Opção $ESCOLHAACESSOTOR inválida. Escolha a correta!"
+  fi
+ done
+}
+# Funcao de Sincronizacao ShowOff
+function BitcoinShowSincr {
+ echo -e "${vermelho}      __   __     _____   ______ \n${vermelho}     /__/\/__/\  /_____/\/_____/\ \n${vermelho}     \  \ \\${verde}: ${vermelho}\ \_\\${verde}:::${vermelho}_${verde}:${vermelho}\ \\${verde}:::${vermelho}_ \ \ \n${vermelho}      \\${verde}::${vermelho}\_\\${verde}::${vermelho}\/_/\  _\\${verde}:${vermelho}\|\\${verde}:${vermelho}\ \ \ \ \n${vermelho}       \_${verde}:::   ${vermelho}__\/ /${verde}::${vermelho}_/__\\${verde}:${vermelho}\ \ \ \   \n${vermelho}            \\${verde}::${vermelho}\ \  \\${verde}:${vermelho}\____/\\${verde}:${vermelho}\_\ \ \  \n${vermelho}             \__\/   \_____\/\_____\/\n${verde}     T I M E${final}";
+}
+# Funcao Verificacao da configuracao nginx proxy
+function VerificarNginx {
+if [ $(sudo nginx -t) == *"test is successful"* ];then
+ ok "nginx Passou no teste"
+ sudo systemctl reload nginx
+else
+ aviso "Problema com a configuracao nginx."
+fi
+}
+# Funcao Backup informacao (passwords, chaves privadas/publicas....)
+function BackupInformacao {
+ if [ ! -d "$PASTABACKUP" ] ; then
+  sudo mkdir -p "$PASTABACKUP"
+  sudo chmod 777 "$PASTABACKUP"
+ fi
+ local BACKUPINFO=$1
+ echo "$1" >> "$PASTABACKUP"/SalvaComSuaVidaOffline.txt
+}
